@@ -1,64 +1,106 @@
 window.GameTowers = window.GameTowers || {};
+const genericUpdate = window.TowerEngine.updateTower;
 
-// Shared update function for standard towers
-function standardUpdate(tower, gameState) {
-    if (tower.cooldown > 0) return;
-    
-    const stats = window.TowerUtils.getTowerStats(tower);
-    const target = window.TowerUtils.findTarget(tower, gameState.enemies, stats.range);
-    
-    if (target) {
-        window.TowerUtils.fireProjectile(tower, target, stats, gameState);
-        window.TowerUtils.updateRotation(tower, target);
-    }
-}
-
-// 1. GUNNER
+// 1. GUNNER (Cannon) - CHANGED to LOCKED
 window.GameTowers.GUNNER = { 
     id: 'GUNNER', name: 'Cannon', rarity: "COMMON", cost: 3, range: 3.5, damage: 20, fireRate: 40, 
-    icon: '🔫', color: '#718096', desc: 'Standard Defense', projectileColor: '#000',
-    targetType: 'GROUND', rotationOffset: Math.PI,
-    update: standardUpdate
+    icon: '💣', color: '#718096', 
+    
+    update: genericUpdate,
+    targetType: 'GROUND',
+    attackType: 'PROJECTILE',
+    projectileType: 'LOCKED', // Tracks enemy
+    projectileSpeed: 8,
+    projectileColor: '#000'
 };
 
-// 2. SNIPER
+// 2. SNIPER (Ranger) - CHANGED to LOCKED
 window.GameTowers.SNIPER = { 
     id: 'SNIPER', name: 'Ranger', rarity: "RARE", cost: 5, range: 7, damage: 100, fireRate: 140, 
-    icon: '🏹', color: '#4299e1', desc: 'High Single Target', projectileColor: '#63b3ed',
-    targetType: 'BOTH', rotationOffset: Math.PI / 4 + Math.PI,
-    update: standardUpdate
+    icon: '🏹', color: '#4299e1', 
+    
+    update: genericUpdate,
+    targetType: 'BOTH',
+    defaultStrategy: 'STRONGEST',
+    
+    attackType: 'PROJECTILE',
+    projectileType: 'LOCKED', // Tracks enemy
+    projectileSpeed: 20,
+    projectileColor: '#63b3ed',
+    
+    critChance: 0.2, 
+    critMultiplier: 2.0
 };
 
-// 3. AIR (Anti-Air)
+// 3. AIR (Skyguard) - CHANGED to LOCKED
 window.GameTowers.AIR = { 
     id: 'AIR', name: 'Skyguard', rarity: "RARE", cost: 5, range: 6.5, damage: 35, fireRate: 20, 
-    icon: '🚀', color: '#e53e3e', desc: 'Rapid Air Fire', projectileColor: '#fc8181',
-    targetType: 'AIR', rotationOffset: Math.PI / 4,
-    update: standardUpdate
+    icon: '🚀', color: '#e53e3e', 
+    
+    update: genericUpdate,
+    targetType: 'AIR', 
+    
+    attackType: 'PROJECTILE',
+    projectileType: 'LOCKED', // Tracks enemy
+    projectileSpeed: 12,
+    projectileColor: '#fc8181'
 };
 
-// 4. RAPID (Flak)
+// 4. RAPID (Flak) - CHANGED to LOCKED
 window.GameTowers.RAPID = { 
     id: 'RAPID', name: 'Flak', rarity: "COMMON", cost: 4, range: 4.5, damage: 12, fireRate: 6, 
-    icon: '🚁', color: '#D69E2E', desc: 'Rapid Air Shredder', projectileColor: '#FAF089',
-    targetType: 'AIR', rotationOffset: Math.PI,
-    update: standardUpdate
+    icon: '💥', color: '#D69E2E', 
+    
+    update: genericUpdate,
+    targetType: 'AIR',
+    
+    attackType: 'PROJECTILE',
+    projectileType: 'LOCKED', // Tracks enemy
+    projectileSpeed: 10,
+    projectileColor: '#FAF089'
 };
 
-// 5. ICE (Frost)
+// 5. ICE (Frost) - FIXED (Kept LINEAR as it is usually a skill shot, but can be LOCKED if preferred)
 window.GameTowers.ICE = { 
     id: 'ICE', name: 'Frost', rarity: "COMMON", cost: 4, range: 4.0, damage: 8, fireRate: 40, 
-    icon: '❄️', color: '#81e6d9', desc: 'Slows Enemies', projectileColor: '#e6fffa',
-    targetType: 'GROUND', rotationOffset: 0, fixed: true,
-    effect: { type: 'slow', factor: 0.5, duration: 60 },
-    update: standardUpdate
+    icon: '❄️', color: '#81e6d9', 
+    
+    update: genericUpdate,
+    targetType: 'GROUND',
+    fixed: true, 
+    
+    attackType: 'PROJECTILE',
+    projectileType: 'LINEAR', // Keeps shooting straight
+    projectileSpeed: 8,
+    projectileColor: '#e6fffa',
+    
+    onHitEffect: { 
+        type: 'SLOW', 
+        factor: 0.5, 
+        duration: 60,
+        chance: 1.0 
+    }
 };
 
-// 6. VENOM (Poison)
+// 6. VENOM (Poison) - CHANGED to LOCKED
 window.GameTowers.VENOM = { 
     id: 'VENOM', name: 'Venom', rarity: "RARE", cost: 5, range: 4.5, damage: 15, fireRate: 60, 
-    icon: '🐍', color: '#48bb78', desc: 'Applies Poison', projectileColor: '#68d391',
-    targetType: 'GROUND', rotationOffset: Math.PI / 2,
-    effect: { type: 'poison', damage: 2, duration: 600 },
-    update: standardUpdate
+    icon: '🧪', color: '#48bb78', 
+    
+    update: genericUpdate,
+    targetType: 'GROUND',
+    
+    attackType: 'PROJECTILE',
+    projectileType: 'LOCKED', // Tracks enemy
+    projectileSpeed: 8,
+    projectileColor: '#68d391',
+    
+    onHitEffect: { 
+        type: 'DOT', 
+        name: 'poison', 
+        damage: 2, 
+        duration: 600, 
+        tickRate: 40,
+        color: '#48bb78'
+    }
 };
