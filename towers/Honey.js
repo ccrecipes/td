@@ -3,6 +3,7 @@ window.GameTowers = window.GameTowers || {};
 window.GameTowers.HONEY = { 
     id: 'HONEY', name: 'Honey', rarity: "COMMON", cost: 4, range: 2, damage: 0, fireRate: 90, 
     icon: '🍯', color: '#d69e2e', 
+    desc: "Sticky, sweet, and incredibly annoying. Covers the ground in high-viscosity syrup that slows enemies to a halt.",
     
     update: window.TowerEngine.updateTower,
     targetType: 'GROUND',

@@ -8,7 +8,8 @@ window.TowerUtils = {
         return {
             damage: tower.type.damage * multi,
             range: tower.type.range * (1 + (tower.level - 1) * 0.1),
-            fireRate: Math.max(5, tower.type.fireRate / (1 + (tower.level - 1) * 0.2))
+            fireRate: Math.max(5, tower.type.fireRate / (1 + (tower.level - 1) * 0.2)),
+            multi: multi 
         };
     },
 
@@ -36,16 +37,21 @@ window.TowerUtils = {
                     factor: 0
                 };
             } else if (id === 'DOT') { 
-                if (!enemy.activeEffects[effectConfig.name]) {
-                    enemy.activeEffects[effectConfig.name] = {
+                const name = effectConfig.name;
+                if (!enemy.activeEffects[name]) {
+                    enemy.activeEffects[name] = {
                         timer: effectConfig.duration,
                         tickRate: effectConfig.tickRate || 60,
                         tickTimer: 0,
                         damage: effectConfig.damage,
-                        color: effectConfig.color
+                        color: effectConfig.color,
+                        stacks: 1 
                     };
                 } else {
-                    enemy.activeEffects[effectConfig.name].timer = effectConfig.duration;
+                    enemy.activeEffects[name].timer = effectConfig.duration;
+                    if (name === 'poison') {
+                        enemy.activeEffects[name].stacks = (enemy.activeEffects[name].stacks || 1) + 1;
+                    }
                 }
             }
         },
@@ -66,7 +72,8 @@ window.TowerUtils = {
                 if (effect.tickRate) {
                     effect.tickTimer--;
                     if (effect.tickTimer <= 0) {
-                        enemy.health -= effect.damage;
+                        const stacks = effect.stacks || 1;
+                        enemy.health -= effect.damage * stacks;
                         effect.tickTimer = effect.tickRate;
                         if (window.gameState && window.gameState.particles) {
                              window.gameState.particles.push({
@@ -93,6 +100,23 @@ window.TowerUtils = {
             const rangePx = stats.range * 64; 
             const minRangePx = (def.minRange || 0) * 64;
 
+            if (def.attackType === 'BEAM' && tower.laserTargetId !== -1) {
+                const current = enemies.find(e => e.id === tower.laserTargetId);
+                if (current) {
+                    const dist = Math.hypot(current.x - tower.x, current.y - tower.y);
+                    const type = def.targetType || 'BOTH';
+                    const isValidType = (type === 'BOTH') || 
+                                        (type === 'GROUND' && !current.isFlying) || 
+                                        (type === 'AIR' && current.isFlying);
+                    
+                    if (dist <= rangePx && dist >= minRangePx && isValidType) {
+                        return current; 
+                    }
+                }
+                tower.laserTargetId = -1;
+                tower.rampTimer = 0;
+            }
+
             const eligible = enemies.filter(e => {
                 const dist = Math.hypot(e.x - tower.x, e.y - tower.y);
                 if (dist > rangePx) return false;
@@ -106,6 +130,16 @@ window.TowerUtils = {
             });
 
             if (eligible.length === 0) return null;
+
+            if (def.id === 'LASER' || def.attackType === 'BEAM') {
+                 eligible.sort((a, b) => {
+                     if (b.health !== a.health) return b.health - a.health;
+                     const distA = Math.hypot(a.x - tower.x, a.y - tower.y);
+                     const distB = Math.hypot(b.x - tower.x, b.y - tower.y);
+                     return distA - distB;
+                 });
+                 return eligible[0];
+            }
 
             const strategy = tower.targetingStrategy || def.defaultStrategy || 'FIRST';
 
@@ -227,13 +261,13 @@ window.TowerUtils = {
                 });
 
                 chainList.forEach(target => {
-                    for(let i=0; i<5; i++) { // 5 sparks per hit
+                    for(let i=0; i<5; i++) { 
                         gameState.particles.push({
                             x: target.x, y: target.y,
                             vx: (Math.random()-0.5)*6, 
                             vy: (Math.random()-0.5)*6,
                             life: 15 + Math.random()*10,
-                            color: '#fff' // White hot sparks
+                            color: '#fff' 
                         });
                     }
                 });
@@ -304,24 +338,46 @@ window.TowerUtils = {
 
             if (hit) {
                 gameState.projectiles.splice(index, 1);
-                this.triggerPayload(p.payload, impactX, impactY, gameState);
+                this.triggerPayload(p.payload, impactX, impactY, gameState, p.targetId);
             }
         },
 
-        triggerPayload: function(payload, x, y, gameState) {
+        triggerPayload: function(payload, x, y, gameState, intendedTargetId) {
             const range = (payload.aoeRadius || 0.1) * 64; 
             const def = payload.sourceDef || {};
             const type = def.targetType || 'BOTH';
 
-            gameState.enemies.forEach(e => {
-                if (type === 'GROUND' && e.isFlying) return;
-                if (type === 'AIR' && !e.isFlying) return;
+            if (payload.aoeRadius) {
+                gameState.enemies.forEach(e => {
+                    if (type === 'GROUND' && e.isFlying) return;
+                    if (type === 'AIR' && !e.isFlying) return;
 
-                const dist = Math.hypot(e.x - x, e.y - y);
-                if (dist <= range + (e.radius || 10)) {
-                    window.TowerUtils.Combat.resolveHit(e, payload, gameState);
+                    const dist = Math.hypot(e.x - x, e.y - y);
+                    if (dist <= range + (e.radius || 10)) {
+                        window.TowerUtils.Combat.resolveHit(e, payload, gameState);
+                    }
+                });
+            } else {
+                let target = null;
+                if (intendedTargetId !== undefined) {
+                    target = gameState.enemies.find(e => e.id === intendedTargetId);
                 }
-            });
+                if (!target) {
+                    let closestDist = Infinity;
+                    gameState.enemies.forEach(e => {
+                        if (type === 'GROUND' && e.isFlying) return;
+                        if (type === 'AIR' && !e.isFlying) return;
+                        const dist = Math.hypot(e.x - x, e.y - y);
+                        if (dist <= 40 && dist < closestDist) {
+                            closestDist = dist;
+                            target = e;
+                        }
+                    });
+                }
+                if (target) {
+                    window.TowerUtils.Combat.resolveHit(target, payload, gameState);
+                }
+            }
 
             if (payload.spawnZone) {
                 gameState.groundEffects.push({
@@ -345,12 +401,56 @@ window.TowerUtils = {
 
     // --- 6. MAIN TOWER UPDATE LOOP ---
     updateTower: function(tower, gameState) {
-        // --- VISUAL RECOIL RECOVERY ---
+        // --- NEW: BURST SEQUENTIAL LOGIC ---
+        if (tower.burstActive) {
+            tower.burstTimer--;
+            if (tower.burstTimer <= 0) {
+                const stats = window.TowerUtils.getTowerStats(tower);
+                const def = tower.type;
+                const rangePx = stats.range * 64; 
+                
+                // Fire in order: Top, Right, Bottom, Left
+                let tx = tower.x, ty = tower.y;
+                if (tower.burstIndex === 0) ty -= rangePx;
+                else if (tower.burstIndex === 1) tx += rangePx;
+                else if (tower.burstIndex === 2) ty += rangePx;
+                else if (tower.burstIndex === 3) tx -= rangePx;
+
+                tower.recoil = 3; 
+
+                window.TowerUtils.Projectiles.spawn(gameState, {
+                    startX: tower.x, startY: tower.y,
+                    targetX: tx, targetY: ty,
+                    moveType: 'LINEAR',
+                    speed: def.projectileSpeed || 4,
+                    checkCollisions: def.checkCollisions,
+                    color: def.projectileColor,
+                    sourceDef: def,
+                    payload: {
+                        sourceX: tower.x, sourceY: tower.y,
+                        damage: stats.damage,
+                        aoeRadius: def.aoeRadius,
+                        applyEffect: def.onHitEffect,
+                        spawnZone: def.onHitZone,
+                        chain: def.chainConfig,
+                        color: def.projectileColor
+                    }
+                });
+
+                tower.burstIndex++;
+                if (tower.burstIndex >= 4) {
+                    tower.burstActive = false;
+                } else {
+                    tower.burstTimer = def.sequentialDelay || 10;
+                }
+            }
+        }
+        // -----------------------------------
+
         if (tower.recoil > 0) tower.recoil--;
 
         if (tower.cooldown > 0) return;
         
-        // Reload Logic
         if (tower.type.maxAmmo && tower.ammo <= 0) {
             tower.reloadTimer = (tower.reloadTimer || 0) + 1;
             if (tower.reloadTimer >= (tower.type.reloadTime || 120)) { tower.ammo = tower.type.maxAmmo; tower.reloadTimer = 0; }
@@ -364,32 +464,40 @@ window.TowerUtils = {
         // --- CONE ATTACK ---
         if (def.attackType === 'CONE') {
             if (!target && def.fireMode !== 'ALWAYS') return;
-            
-            // Set Recoil for Cone (Vibration)
             tower.recoil = 2; 
-            
             tower.cooldown = stats.fireRate;
             if (target) window.TowerUtils.updateRotation(tower, target);
             
-            // Visuals
-            for(let i=0; i<3; i++) { 
+            const count = 10; 
+            for(let i=0; i<count; i++) { 
                 const spread = (Math.random() - 0.5) * (def.coneAngle || 0.5);
                 const angle = tower.angle + spread;
-                const speed = 6 + Math.random() * 4;
+                const speed = 6 + Math.random() * 8; 
+                
+                const isSmoke = Math.random() > 0.8; 
+                const color = isSmoke ? '#4a5568' : (Math.random() > 0.6 ? '#ed8936' : (Math.random() > 0.5 ? '#f6ad55' : '#ecc94b')); 
+
                 gameState.particles.push({
-                    x: tower.x + Math.cos(angle)*20,
-                    y: tower.y + Math.sin(angle)*20,
+                    x: tower.x + Math.cos(angle)*25,
+                    y: tower.y + Math.sin(angle)*25,
                     vx: Math.cos(angle) * speed,
                     vy: Math.sin(angle) * speed,
-                    life: 20 + Math.random() * 10,
-                    color: def.projectileColor || '#ed8936'
+                    life: 20 + Math.random() * 15,
+                    maxLife: 35, 
+                    color: color,
+                    radius: isSmoke ? 6 : (6 + Math.random() * 4), 
+                    isFire: true 
                 });
             }
 
-            // Logic
             const rangePx = stats.range * 64;
             const coneHalf = (def.coneAngle || 0.5) / 2;
+            const type = def.targetType || 'BOTH';
+
             gameState.enemies.forEach(e => {
+                if (type === 'GROUND' && e.isFlying) return;
+                if (type === 'AIR' && !e.isFlying) return;
+
                 const dx = e.x - tower.x; const dy = e.y - tower.y;
                 const dist = Math.hypot(dx, dy);
                 if (dist > rangePx) return;
@@ -419,8 +527,9 @@ window.TowerUtils = {
 
                 let currentDPS = stats.damage; 
                 if (def.maxDamage && def.rampDuration) {
+                    const maxDamageScaled = def.maxDamage * stats.multi; 
                     const rampProgress = Math.min(tower.rampTimer, def.rampDuration) / def.rampDuration;
-                    const damageGrowth = def.maxDamage - stats.damage;
+                    const damageGrowth = maxDamageScaled - stats.damage;
                     currentDPS += damageGrowth * rampProgress;
                 }
                 
@@ -443,22 +552,24 @@ window.TowerUtils = {
         }
 
         // --- STANDARD ATTACKS ---
-        if (target || def.fireMode === 'ALWAYS') {
-            tower.cooldown = tower.overclockTimer > 0 ? stats.fireRate / 2 : stats.fireRate;
+        if (target || def.fireMode === 'ALWAYS' || def.fireMode === 'BURST_CARDINAL') {
             
-            // Set Recoil for Standard Shots
+            // Trigger Burst Sequence
+            if (def.fireMode === 'BURST_CARDINAL') {
+                tower.cooldown = stats.fireRate;
+                tower.burstActive = true;
+                tower.burstIndex = 0;
+                tower.burstTimer = 0;
+                return; 
+            }
+
+            tower.cooldown = tower.overclockTimer > 0 ? stats.fireRate / 2 : stats.fireRate;
             tower.recoil = 4;
 
             if (def.maxAmmo) { if (tower.ammo === undefined) tower.ammo = def.maxAmmo; tower.ammo--; }
 
             let targets = [target];
-            if (def.fireMode === 'BURST_CARDINAL') {
-                targets = [
-                    {x: tower.x, y: tower.y - 100}, {x: tower.x + 100, y: tower.y},
-                    {x: tower.x, y: tower.y + 100}, {x: tower.x - 100, y: tower.y}
-                ];
-            }
-
+            
             targets.forEach(t => {
                 if(!t) return;
                 let step = 0;
@@ -474,9 +585,7 @@ window.TowerUtils = {
                     speed: def.projectileSpeed || 8,
                     currentSpeed: def.projectileSpeed || 8,
                     step: step, arcHeight: 200, checkCollisions: def.checkCollisions,
-                    
                     progress: 0, 
-                    
                     color: def.projectileColor,
                     sourceDef: def,
                     payload: {

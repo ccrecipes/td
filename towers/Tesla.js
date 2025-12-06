@@ -3,6 +3,7 @@ window.GameTowers = window.GameTowers || {};
 window.GameTowers.TESLA = { 
     id: 'TESLA', name: 'Tesla', rarity: "EPIC", cost: 7, range: 4.0, damage: 45, fireRate: 50, 
     icon: '⚡', color: '#ecc94b', 
+    desc: "A marvel of engineering that chains electricity between foes. Invented by a mad scientist who really hated orderly queues.",
     
     update: window.TowerEngine.updateTower,
     targetType: 'BOTH',

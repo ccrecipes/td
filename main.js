@@ -23,6 +23,16 @@ const SPELLS = {
     OVERCLOCK: { id: 'OVERCLOCK', name: 'Rage', icon: '⚡', color: '#facc15', cooldown: 1800, radius: 3.0, duration: 600, desc: 'Supercharges nearby towers.' } 
 };
 
+// --- ENEMY VARIANTS ---
+const ENEMY_VARIANTS = {
+    NORMAL: { hpMod: 1.0, spdMod: 1.0, color: '#fbbf24', radius: 12 },
+    FAST:   { hpMod: 0.6, spdMod: 1.5, color: '#d53f8c', radius: 10 }, 
+    TANK:   { hpMod: 2.5, spdMod: 0.6, color: '#276749', radius: 16 }, 
+    HEALER: { hpMod: 0.8, spdMod: 0.9, color: '#fff', radius: 12, isHealer: true } 
+};
+
+const BOSS_ABILITIES = ['SUMMONER', 'SPRINTER', 'REGENERATOR'];
+
 // --- STATE MANAGEMENT ---
 let userLoadout = {
     towers: new Set(['TESLA', 'AIR', 'MORTAR', 'RAPID', 'LASER', 'INFERNO']),
@@ -44,7 +54,8 @@ let gameState = {
     selectedTowerType: null, selectedPlacedTower: null, selectedSpell: null,
     spellCooldowns: {}, spawnQueue: [], spawnTimer: 0,
     mapWidth: 0, mapHeight: 0, terrainVisuals: [], features: [],
-    swapMode: null, currentWaveConfig: null
+    swapMode: null, currentWaveConfig: null,
+    healingLinks: [] 
 };
 
 const mouse = { x: 0, y: 0, gridX: 0, gridY: 0, valid: false };
@@ -275,7 +286,6 @@ function handleDropOnDeck(e, targetType, occupiedId) {
     }
 }
 
-// --- MODAL & ACTION HANDLERS ---
 let currentModalData = null;
 
 function openCardModal(id, type) {
@@ -423,8 +433,6 @@ function validateDeck() {
     }
 }
 
-// --- GAME LOGIC INTEGRATION ---
-
 function buildGameHUD() {
     const towerContainer = document.getElementById('hudTowers');
     towerContainer.innerHTML = '';
@@ -457,6 +465,11 @@ function buildGameHUD() {
         const btn = document.createElement('div');
         btn.className = `slot-card cursor-pointer interactive`;
         btn.id = `hud-spell-${spell.id}`;
+        
+        btn.setAttribute('draggable', 'true');
+        btn.addEventListener('dragstart', (e) => handleHudSpellDragStart(e, spell.id));
+        btn.addEventListener('dragend', handleDragEnd);
+
         btn.onclick = () => selectSpell(spell.id);
         btn.innerHTML = `
             <div class="text-3xl pointer-events-none mb-1 shadow-black drop-shadow-md">${spell.icon}</div>
@@ -469,7 +482,7 @@ function buildGameHUD() {
 
 function handleHudDragStart(e, towerId) {
     if (!gameState.running) { e.preventDefault(); return; }
-    e.dataTransfer.setData("text/plain", towerId);
+    e.dataTransfer.setData("text/plain", "TOWER:" + towerId); 
     e.dataTransfer.effectAllowed = "copy";
     gameState.interactionMode = 'DRAG';
     gameState.selectedTowerType = towerId;
@@ -479,11 +492,26 @@ function handleHudDragStart(e, towerId) {
     e.target.style.opacity = '0.5';
 }
 
+function handleHudSpellDragStart(e, spellId) {
+    if (!gameState.running || gameState.spellCooldowns[spellId] > 0) { e.preventDefault(); return; }
+    
+    e.dataTransfer.setData("text/plain", "SPELL:" + spellId);
+    e.dataTransfer.effectAllowed = "copy";
+    gameState.interactionMode = 'DRAG_SPELL';
+    gameState.selectedSpell = spellId;
+    
+    const emptyImg = new Image(); 
+    emptyImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    e.dataTransfer.setDragImage(emptyImg, 0, 0);
+    e.target.style.opacity = '0.5';
+}
+
 function handleDragEnd(e) {
     e.target.style.opacity = '1';
-    if (gameState.interactionMode === 'DRAG') {
+    if (gameState.interactionMode === 'DRAG' || gameState.interactionMode === 'DRAG_SPELL') {
         gameState.interactionMode = 'NONE';
         gameState.selectedTowerType = null;
+        gameState.selectedSpell = null;
     }
     updateSelectionUI();
 }
@@ -499,17 +527,30 @@ function handleDragOver(e) {
 
 function handleDrop(e) {
     e.preventDefault();
-    const towerId = e.dataTransfer.getData("text/plain");
-    if (mouse.valid && towerId && TOWERS[towerId]) {
-        gameState.selectedTowerType = towerId;
-        attemptPlaceTower(mouse.gridX, mouse.gridY);
+    const data = e.dataTransfer.getData("text/plain");
+    
+    let type = 'TOWER'; 
+    let id = data;
+    
+    if (data.includes(':')) {
+        [type, id] = data.split(':');
     }
+
+    if (mouse.valid) {
+        if (type === 'TOWER' && TOWERS[id]) {
+            gameState.selectedTowerType = id;
+            attemptPlaceTower(mouse.gridX, mouse.gridY);
+        } else if (type === 'SPELL' && SPELLS[id]) {
+            castSpell(id, mouse.x, mouse.y);
+            gameState.selectedSpell = null; 
+        }
+    }
+    
     gameState.interactionMode = 'NONE';
     gameState.selectedTowerType = null;
+    gameState.selectedSpell = null;
     updateSelectionUI();
 }
-
-// --- MAIN GAME LOOP FUNCTIONS ---
 
 function showLoadoutScreen() {
     gameState.running = false;
@@ -548,6 +589,7 @@ function resetGame() {
     
     gameState.spawnQueue = [];
     gameState.spellCooldowns = {};
+    gameState.healingLinks = [];
     userLoadout.spells.forEach(id => { gameState.spellCooldowns[id] = 0; });
     if(gameState.grid[gameState.start.y]) gameState.grid[gameState.start.y][gameState.start.x] = 0;
     if(gameState.grid[gameState.end.y]) gameState.grid[gameState.end.y][gameState.end.x] = 0;
@@ -606,10 +648,44 @@ function generateWaveConfig(n) { const isBoss=n%10===0; const hasAir=n>=3&&(Math
 function selectTowerType(id) { if(!userLoadout.towers.has(id)) return; if(gameState.interactionMode==='BUILD'&&gameState.selectedTowerType===id){gameState.interactionMode='NONE';gameState.selectedTowerType=null;}else{gameState.interactionMode='BUILD';gameState.selectedTowerType=id;gameState.selectedPlacedTower=null;gameState.selectedSpell=null;} showBuildMenu(); updateSelectionUI(); }
 function selectSpell(id) { if(!userLoadout.spells.has(id)||gameState.spellCooldowns[id]>0)return; if(gameState.interactionMode==='SPELL'&&gameState.selectedSpell===id){gameState.interactionMode='NONE';gameState.selectedSpell=null;}else{gameState.interactionMode='SPELL';gameState.selectedSpell=id;gameState.selectedPlacedTower=null;} showBuildMenu(); updateSelectionUI(); }
 function showBuildMenu() { document.getElementById('buildHud').classList.replace('hidden','flex'); document.getElementById('upgradeHud').classList.replace('flex','hidden'); }
-function showUpgradeMenu(t) { document.getElementById('buildHud').classList.replace('flex','hidden'); document.getElementById('upgradeHud').classList.replace('hidden','flex'); document.getElementById('upgName').innerText=t.type.name; document.getElementById('upgLevel').innerText=`Level ${t.level}`; const s=window.TowerUtils.getTowerStats(t); document.getElementById('statDmg').innerText=Math.round(s.damage); document.getElementById('statRng').innerText=s.range.toFixed(1); document.getElementById('statSpd').innerText=t.type.fireRate>0?(60/s.fireRate).toFixed(1)+'/s':'-'; document.getElementById('sellPrice').innerText=Math.floor(t.type.cost*0.5*t.level); const btn=document.getElementById('btnUpgrade'); if(t.level>=3){btn.disabled=true;btn.querySelector('span:last-child').innerText='MAX';}else{btn.disabled=false;const c=t.type.cost*(t.level+1);btn.querySelector('span:last-child').innerText=`💰 ${c}`;if(gameState.money<c)btn.classList.add('opacity-50');else btn.classList.remove('opacity-50');} }
+function showUpgradeMenu(t) { 
+    document.getElementById('buildHud').classList.replace('flex','hidden'); 
+    document.getElementById('upgradeHud').classList.replace('hidden','flex'); 
+    document.getElementById('upgName').innerText=t.type.name; 
+    document.getElementById('upgLevel').innerText=`Level ${t.level}`; 
+    const s=window.TowerUtils.getTowerStats(t); 
+    document.getElementById('statDmg').innerText=Math.round(s.damage); 
+    document.getElementById('statRng').innerText=s.range.toFixed(1); 
+    document.getElementById('statSpd').innerText=t.type.fireRate>0?(60/s.fireRate).toFixed(1)+'/s':'-'; 
+    document.getElementById('sellPrice').innerText=Math.floor(t.type.cost*0.5*t.level); 
+    const btn=document.getElementById('btnUpgrade'); 
+    if(t.level>=3){
+        btn.disabled=true;
+        btn.querySelector('span:last-child').innerText='MAX';
+    }else{
+        btn.disabled=false;
+        // NEW COST FORMULA:
+        const c = Math.ceil(t.type.cost * (0.5 + (t.level - 1) * 0.2));
+        btn.querySelector('span:last-child').innerText=`💰 ${c}`;
+        if(gameState.money<c)btn.classList.add('opacity-50');else btn.classList.remove('opacity-50');
+    } 
+}
+
 function closeUpgradeMenu() { gameState.selectedPlacedTower=null; gameState.interactionMode='NONE'; showBuildMenu(); updateSelectionUI(); }
 function updateSelectionUI() { document.querySelectorAll('.slot-card').forEach(e=>e.classList.remove('selected-tower','selected-spell')); if(gameState.interactionMode==='BUILD'&&gameState.selectedTowerType)document.getElementById(`hud-tower-${gameState.selectedTowerType}`)?.classList.add('selected-tower'); else if(gameState.interactionMode==='SPELL'&&gameState.selectedSpell)document.getElementById(`hud-spell-${gameState.selectedSpell}`)?.classList.add('selected-spell'); }
-function upgradeSelectedTower() { const t=gameState.selectedPlacedTower; if(!t||t.level>=3)return; const c=t.type.cost*(t.level+1); if(gameState.money>=c){gameState.money-=c;t.level++;addParticle(t.x,t.y,'#fbbf24',15);showUpgradeMenu(t);updateUI();} }
+function upgradeSelectedTower() { 
+    const t=gameState.selectedPlacedTower; 
+    if(!t||t.level>=3)return; 
+    // NEW COST FORMULA:
+    const c = Math.ceil(t.type.cost * (0.5 + (t.level - 1) * 0.2));
+    if(gameState.money>=c){
+        gameState.money-=c;
+        t.level++;
+        addParticle(t.x,t.y,'#fbbf24',15);
+        showUpgradeMenu(t);
+        updateUI();
+    } 
+}
 function sellSelectedTower() { const t=gameState.selectedPlacedTower; if(!t)return; gameState.money+=Math.floor(t.type.cost*0.5*t.level); gameState.grid[t.gridY][t.gridX]=0; gameState.towers=gameState.towers.filter(x=>x!==t); addParticle(t.x,t.y,'#fff',10); recalculatePath(); closeUpgradeMenu(); updateUI(); }
 function getBFSPath(s,e,g) { const q=[s],v=new Set([`${s.x},${s.y}`]),c={}; const dirs=[[0,1],[0,-1],[1,0],[-1,0]]; const H=g.length; const W=g[0].length; while(q.length){const cur=q.shift();if(cur.x===e.x&&cur.y===e.y){const p=[];let t=cur;while(t){p.push(t);t=c[`${t.x},${t.y}`];}return p.reverse();}for(let[dx,dy]of dirs){const nx=cur.x+dx,ny=cur.y+dy;if(nx>=0&&nx<W&&ny>=0&&ny<H){const k=`${nx},${ny}`;if(!v.has(k)&&g[ny][nx]===0){v.add(k);c[k]=cur;q.push({x:nx,y:ny});}}}} return null; }
 function recalculatePath() { const p=getBFSPath(gameState.start,gameState.end,gameState.grid); if(p)gameState.path=p; return p; }
@@ -669,7 +745,6 @@ function castSpell(id, x, y) {
 function showTowerTooltip(id,x,y) { const t=TOWERS[id]; if(!t)return; const el=document.getElementById('towerTooltip'); el.innerHTML=`<div class="flex items-center gap-2 mb-2 border-b border-gray-600 pb-1"><span class="text-2xl">${t.icon}</span><div><div class=" text-yellow-400 text-lg leading-none">${t.name}</div><div class="text-xs text-gray-400">${t.desc}</div></div></div><div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs"><div>💥 Damage: <span class=" text-white">${t.damage}</span></div><div>🎯 Range: <span class=" text-white">${t.range}</span></div></div>`; el.classList.remove('hidden'); let l=x+10,tp=y+10; if(l+220>window.innerWidth)l=x-230; if(tp+100>window.innerHeight)tp=y-110; el.style.left=l+'px'; el.style.top=tp+'px'; }
 function hideTowerTooltip() { document.getElementById('towerTooltip').classList.add('hidden'); }
 
-// Loop & Update
 let lastTime=0, acc=0; const TS=1000/60;
 function loop(ts) { if(!lastTime)lastTime=ts; const dt=ts-lastTime; lastTime=ts; if(gameState.running){acc+=dt;if(acc>1000)acc=1000;while(acc>=TS){update();acc-=TS;}draw();} requestAnimationFrame(loop); }
 
@@ -680,7 +755,7 @@ function update() {
     if(gameState.waveActive){
         if(gameState.spawnQueue.length>0){
             gameState.spawnTimer--;
-            if(gameState.spawnTimer<=0){ const d=gameState.spawnQueue.pop(); if(d)spawnEnemy(d.isBoss,d.flying); gameState.spawnTimer=40; }
+            if(gameState.spawnTimer<=0){ const d=gameState.spawnQueue.pop(); if(d)spawnEnemy(d.isBoss,d.flying,d.variant); gameState.spawnTimer=40; }
         }else if(gameState.enemies.length===0){
             let reward = 4;
             if (gameState.currentWaveConfig) {
@@ -693,12 +768,70 @@ function update() {
         }
     }
 
+    // Process Active Healing Links
+    gameState.healingLinks.forEach(l => l.life--);
+    gameState.healingLinks = gameState.healingLinks.filter(l => l.life > 0);
+
     for(let i=gameState.enemies.length-1;i>=0;i--){const e=gameState.enemies[i]; 
         let sm = 1.0;
+        
+        // --- FIX: INTEGRATE STATUS EFFECTS FROM TOWERUTILS ---
+        // This ensures effects like Frost (SLOW) and Venom (DOT) actually work.
+        if (window.TowerUtils && window.TowerUtils.Effects) {
+            sm *= window.TowerUtils.Effects.updateEnemy(e);
+        }
+        // -----------------------------------------------------
+
         if(e.slowTimer > 0) sm *= e.frozenSpeed;
         if(e.honeySlowed) sm *= e.honeyFactor;
         e.honeySlowed = false;
         
+        // --- ABILITY LOGIC ---
+        if (e.variant === 'HEALER' && gameState.running && i % 60 === 0) { 
+             gameState.enemies.forEach(other => {
+                 if (other !== e && Math.hypot(other.x - e.x, other.y - e.y) < 150) {
+                     if (other.health < other.maxHealth) {
+                         other.health += other.maxHealth * 0.05;
+                         if(other.health > other.maxHealth) other.health = other.maxHealth;
+                         addParticle(other.x, other.y, '#48bb78', 3);
+                         
+                         // --- ADD LINK VISUAL ---
+                         gameState.healingLinks.push({
+                             healerId: e.id,
+                             targetId: other.id,
+                             life: 20 // Visible for 20 frames
+                         });
+                     }
+                 }
+             });
+        }
+        
+        if (e.isBoss && e.ability) {
+            e.abilityTimer--;
+            if (e.abilityTimer <= 0) {
+                if (e.ability === 'SUMMONER') {
+                    for(let k=0; k<2; k++) {
+                        spawnEnemy(false, false, 'FAST');
+                        const minion = gameState.enemies[gameState.enemies.length - 1];
+                        minion.x = e.x; minion.y = e.y;
+                        minion.pathIndex = e.pathIndex;
+                    }
+                    addParticle(e.x, e.y, '#805ad5', 20);
+                    e.abilityTimer = 300; 
+                } else if (e.ability === 'SPRINTER') {
+                    e.baseSpeed *= 3; 
+                    addParticle(e.x, e.y, '#fff', 10);
+                    setTimeout(() => { if(e) e.baseSpeed /= 3; }, 1000); 
+                    e.abilityTimer = 240; 
+                } else if (e.ability === 'REGENERATOR') {
+                    e.health += e.maxHealth * 0.1;
+                    if(e.health > e.maxHealth) e.health = e.maxHealth;
+                    addParticle(e.x, e.y, '#f56565', 15);
+                    e.abilityTimer = 120; 
+                }
+            }
+        }
+
         if(e.slowTimer>0)e.slowTimer--; 
         for (let k = e.poisonStacks.length - 1; k >= 0; k--) {
             let p = e.poisonStacks[k];
@@ -729,9 +862,20 @@ function update() {
         if(Math.random()>0.8){ const a=Math.random()*6.28,r=Math.random()*z.radius; addParticle(z.x+Math.cos(a)*r,z.y+Math.sin(a)*r, z.color || '#f97316', 1); }
         gameState.enemies.forEach(e=>{
             if(!e.isFlying && Math.hypot(e.x-z.x,e.y-z.y)<z.radius){
-                if(z.type === 'honey') { e.honeySlowed = true; e.honeyFactor = z.slowFactor; } 
-                else {
-                    if(z.duration%10===0) { e.health-=z.damage; e.isBurned=true; e.burnDamage=z.burnDamage||2; e.burnDuration=180; e.burnTick=0; }
+                // --- FIXED GROUND EFFECT LOGIC ---
+                if (z.tickEffect) {
+                    // Apply the effect to the enemy so it shows up in status bars and is handled by TowerUtils
+                    if (window.TowerUtils && window.TowerUtils.Effects) {
+                        window.TowerUtils.Effects.apply(e, z.tickEffect);
+                    }
+                }
+
+                if (z.damage && z.duration % 10 === 0) {
+                    e.health -= z.damage;
+                    e.isBurned = true;
+                    e.burnDamage = z.burnDamage || 2;
+                    e.burnDuration = 180;
+                    e.burnTick = 0;
                 }
             }
         });
@@ -750,12 +894,56 @@ function applyEffect(e, f) {
 function activateWave() { if(gameState.waveActive)return; gameState.waveActive=true; gameState.autoStartTimer=0; updateWaveControlUI(); const c=gameState.upcomingWaves[0]; gameState.currentWaveConfig = c; if(c.isBoss){document.getElementById('bossSplash').classList.remove('hidden');setTimeout(()=>document.getElementById('bossSplash').classList.add('hidden'),3000);gameState.spawnQueue=[{isBoss:true,flying:c.type==='AIR'||(c.type==='MIXED'&&Math.random()>0.5)}];}else{const cnt=5+gameState.wave;gameState.spawnQueue=[];for(let i=0;i<cnt;i++)gameState.spawnQueue.push({isBoss:false,flying:c.type==='AIR'||(c.type==='MIXED'&&Math.random()>0.6)});} }
 function prepareNextWave() { gameState.upcomingWaves.shift(); gameState.upcomingWaves.push(generateWaveConfig(gameState.wave+6)); gameState.wave++; updateWaveControlUI(); updateUI(); if(gameState.autoStart){gameState.autoStartTimer=180;document.getElementById('autoTimer').classList.remove('hidden');} }
 function updateWaveControlUI() { const b=document.getElementById('nextWaveBtn'),s=document.getElementById('waveStatus'),a=document.getElementById('autoTimer'),c=document.getElementById('wavePreview'); if(gameState.waveActive){b.classList.add('hidden');s.classList.remove('hidden');a.classList.add('hidden');}else{if(!gameState.autoStart)b.classList.remove('hidden');else b.classList.add('hidden');s.classList.add('hidden');} c.innerHTML=''; for(let i=0;i<5;i++){const w=gameState.upcomingWaves[i],d=document.createElement('div');d.className='wave-pip';let sym='🛡️';if(w.isBoss)sym='💀';else if(w.type==='AIR')sym='🎈';else if(w.type==='MIXED')sym='⚡';d.innerHTML=sym;if(w.isBoss)d.style.borderColor='#ef4444';if(w.type==='AIR')d.style.color='#63b3ed';c.appendChild(d);} }
+
 let eid=0;
-function spawnEnemy(b, f) {
-    const hp = b ? 3000 + (gameState.wave * 500) : 30 + (gameState.wave * 15);
-    const sp = f ? (b ? 0.6 : 1.2) : (b ? 0.5 : 1.0 + (gameState.wave * 0.05));
-    gameState.enemies.push({ id: eid++, x: gameState.start.x * CELL_SIZE + CELL_SIZE/2, y: gameState.start.y * CELL_SIZE + CELL_SIZE/2, health: hp, maxHealth: hp, baseSpeed: sp, reward: b ? 10 : 1, isBoss: b, isFlying: f, path: getBFSPath(gameState.start, gameState.end, gameState.grid), pathIndex: 0, radius: b ? 20 : 12, color: b ? '#ef4444' : (f ? '#3182ce' : '#fbbf24'), slowTimer: 0, poisonStacks: [], isBurned: false, burnDamage: 0, burnDuration: 0, burnTick: 0 });
+function spawnEnemy(b, f, forcedVariant = null) {
+    const wave = gameState.wave;
+    const waveMult = Math.pow(1.08, wave - 1); 
+    
+    let hp = b ? (3000 + (wave * 200)) * waveMult : (40 + (wave * 5)) * waveMult;
+    let sp = f ? (b ? 0.6 : 1.2) : (b ? 0.5 : 1.0 + (wave * 0.02));
+    
+    let variantKey = 'NORMAL';
+    if (forcedVariant) {
+        variantKey = forcedVariant;
+    } else if (!b) {
+        const r = Math.random();
+        if (r < 0.2) variantKey = 'FAST';
+        else if (r < 0.35) variantKey = 'TANK';
+        else if (r < 0.45) variantKey = 'HEALER';
+    }
+
+    const config = ENEMY_VARIANTS[variantKey];
+    hp *= config.hpMod;
+    sp *= config.spdMod;
+
+    let ability = null;
+    let abilityTimer = 0;
+    if (b) {
+        ability = BOSS_ABILITIES[Math.floor(Math.random() * BOSS_ABILITIES.length)];
+        abilityTimer = 120; 
+    }
+
+    gameState.enemies.push({ 
+        id: eid++, 
+        x: gameState.start.x * CELL_SIZE + CELL_SIZE/2, 
+        y: gameState.start.y * CELL_SIZE + CELL_SIZE/2, 
+        health: hp, maxHealth: hp, 
+        baseSpeed: sp, 
+        reward: b ? 10 : 1, 
+        isBoss: b, isFlying: f, 
+        path: getBFSPath(gameState.start, gameState.end, gameState.grid), 
+        pathIndex: 0, 
+        radius: b ? 24 : config.radius, 
+        color: b ? '#ef4444' : config.color, 
+        variant: variantKey,
+        ability: ability,
+        abilityTimer: abilityTimer,
+        slowTimer: 0, poisonStacks: [], 
+        isBurned: false, burnDamage: 0, burnDuration: 0, burnTick: 0 
+    });
 }
+
 function endGame() { gameState.running=false; document.getElementById('overlay').classList.remove('hidden'); document.querySelector('#overlay h1').innerText="DEFEAT"; document.getElementById('menuBtn').classList.remove('hidden'); document.getElementById('startBtn').innerText="TRY AGAIN"; }
 function updateUI() { document.getElementById('moneyDisplay').innerText=Math.floor(gameState.money); document.getElementById('livesDisplay').innerText=gameState.lives; document.getElementById('waveDisplay').innerText=gameState.wave; userLoadout.towers.forEach(id=>{const b=document.getElementById(`hud-tower-${id}`);if(b){if(gameState.money<TOWERS[id].cost)b.classList.add('disabled');else b.classList.remove('disabled');}}); }
 function addParticle(x,y,c,n) { for(let i=0;i<n;i++)gameState.particles.push({x,y,vx:(Math.random()-0.5)*4,vy:(Math.random()-0.5)*4,life:20+Math.random()*10,color:c}); }
@@ -809,14 +997,83 @@ function draw() {
     ctx.fillText('🏰', gameState.start.x * CELL_SIZE + CELL_SIZE/2, gameState.start.y * CELL_SIZE + CELL_SIZE/2);
     ctx.fillText('💀', gameState.end.x * CELL_SIZE + CELL_SIZE/2, gameState.end.y * CELL_SIZE + CELL_SIZE/2);
 
+    // --- NEW: Draw Healing Links (Before enemies so it's behind them) ---
+    ctx.save();
+    gameState.healingLinks.forEach(l => {
+        const healer = gameState.enemies.find(e => e.id === l.healerId);
+        const target = gameState.enemies.find(e => e.id === l.targetId);
+        if (healer && target) {
+            const alpha = l.life / 20;
+            ctx.globalAlpha = alpha;
+            ctx.strokeStyle = '#48bb78'; // Green
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(healer.x, healer.y);
+            ctx.lineTo(target.x, target.y);
+            ctx.stroke();
+            
+            // Draw healing cross in center
+            const midX = (healer.x + target.x) / 2;
+            const midY = (healer.y + target.y) / 2;
+            ctx.fillStyle = '#48bb78';
+            ctx.font = '10px Arial';
+            ctx.fillText('✚', midX, midY);
+        }
+    });
+    ctx.restore();
+    // ----------------------------------------------------------------
+
+    // --- UPDATED TOWER DRAW LOGIC ---
     gameState.towers.forEach(t => {
         ctx.save(); ctx.translate(t.x, t.y);
-        ctx.shadowBlur = 5; ctx.shadowColor = 'rgba(0,0,0,0.5)';
-        ctx.fillStyle = t.type.color; ctx.fillRect(-20, -20, 40, 40);
-        ctx.strokeStyle = t === gameState.selectedPlacedTower ? '#fff' : '#2d3748';
-        ctx.lineWidth = t === gameState.selectedPlacedTower ? 3 : 2;
-        ctx.strokeRect(-20, -20, 40, 40);
         
+        // --- UPGRADE VISUALS (Background Layer) ---
+        if (t.level >= 3) {
+            // Level 3: Gold Aura / Base
+            ctx.shadowBlur = 15; ctx.shadowColor = '#fbbf24';
+            ctx.fillStyle = '#b45309'; // Dark Gold/Bronze background
+            ctx.fillRect(-24, -24, 48, 48); // Larger base
+            ctx.shadowBlur = 0;
+        } else if (t.level >= 2) {
+            // Level 2: Iron Plating / Base
+            ctx.fillStyle = '#4a5568'; // Dark Gray/Iron
+            ctx.fillRect(-22, -22, 44, 44); // Slightly larger
+        }
+
+        // --- MAIN TOWER BODY ---
+        ctx.shadowBlur = 5; ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.fillStyle = t.type.color; 
+        ctx.fillRect(-20, -20, 40, 40);
+        
+        // --- BORDER / REINFORCEMENT ---
+        if (t.level >= 3) {
+            ctx.strokeStyle = '#fbd38d'; // Gold
+            ctx.lineWidth = 3;
+        } else if (t.level >= 2) {
+            ctx.strokeStyle = '#cbd5e0'; // Silver
+            ctx.lineWidth = 3;
+        } else {
+            ctx.strokeStyle = '#2d3748'; // Standard Dark
+            ctx.lineWidth = 2;
+        }
+        
+        // Selection Highlight override
+        if (t === gameState.selectedPlacedTower) {
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 3;
+        }
+        
+        ctx.strokeRect(-20, -20, 40, 40);
+
+        // --- DECORATIVE BOLTS (Level 2+) ---
+        if (t.level >= 2) {
+            ctx.fillStyle = (t.level === 3) ? '#fbd38d' : '#cbd5e0';
+            // Draw bolts in 4 corners
+            const bolt = (x, y) => { ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI*2); ctx.fill(); };
+            bolt(-15, -15); bolt(15, -15); bolt(15, 15); bolt(-15, 15);
+        }
+
+        // --- ROTATION & ICON ---
         if(!t.type.fixed) {
             ctx.rotate(t.angle + (t.type.rotationOffset || 0));
             if(t.recoil > 0) ctx.translate(-t.recoil * 1.5, 0);
@@ -825,9 +1082,8 @@ function draw() {
         ctx.shadowBlur = 0; ctx.font = '32px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(t.type.icon, 0, 2);
         ctx.restore();
-        
-        if(t.level > 1) { ctx.font = '12px Arial'; ctx.textAlign = 'center'; ctx.fillText('⭐'.repeat(t.level - 1), t.x, t.y - 25); }
-        
+
+        // --- RESTORED BEAM DRAWING LOGIC ---
         if(t.type.attackType === 'BEAM' && t.laserTargetId !== -1) {
             const tg = gameState.enemies.find(e => e.id === t.laserTargetId);
             if(tg) {
@@ -867,6 +1123,7 @@ function draw() {
             }
         }
     });
+    // --------------------------------
 
     const sortedEnemies = [...gameState.enemies].sort((a,b) => (a.isFlying ? 1 : 0) - (b.isFlying ? 1 : 0));
     sortedEnemies.forEach(e => {
@@ -874,17 +1131,60 @@ function draw() {
         const sy = e.isFlying ? 30 : 10, ss = e.isFlying ? 0.7 : 1.0;
         ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.ellipse(0, sy, e.radius*ss, (e.radius/2)*ss, 0, 0, Math.PI*2); ctx.fill();
         
+        // Use variant color for body
+        // ----------------------------------------
+        ctx.fillStyle = e.color || '#fff';
+        ctx.beginPath(); ctx.arc(0, 0, e.radius, 0, Math.PI*2); ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.stroke();
+        // ----------------------------------------
+
         if(e.isFlying) {
             ctx.font = e.isBoss ? '40px Arial' : '24px Arial';
             ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#ffffff';
             ctx.fillText('🎈', 0, 0);
         } else {
-            ctx.fillStyle = e.poisonStacks.length > 0 ? '#4ade80' : (e.isBurned ? '#f97316' : (e.slowTimer > 0 ? '#38bdf8' : e.color));
-            ctx.beginPath(); ctx.arc(0, 0, e.radius, 0, Math.PI*2); ctx.fill();
-            ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.stroke();
+            // Eyes
             ctx.fillStyle = 'white'; ctx.beginPath(); ctx.arc(-4, -4, 3, 0, Math.PI*2); ctx.arc(4, -4, 3, 0, Math.PI*2); ctx.fill();
             ctx.fillStyle = 'black'; ctx.beginPath(); ctx.arc(-4, -4, 1, 0, Math.PI*2); ctx.arc(4, -4, 1, 0, Math.PI*2); ctx.fill();
+            
+            if (e.variant === 'TANK') { ctx.font='10px Arial'; ctx.fillText('🛡️', 0, -10); }
+            if (e.variant === 'HEALER') { ctx.font='10px Arial'; ctx.fillText('✚', 0, -10); }
         }
+        
+        if(e.isBoss && e.ability) {
+             let icon = '';
+             if(e.ability === 'SUMMONER') icon = '💀';
+             if(e.ability === 'SPRINTER') icon = '⚡';
+             if(e.ability === 'REGENERATOR') icon = '❤️';
+             ctx.font = '12px Arial'; ctx.fillText(icon, 12, -12);
+        }
+
+        // --- NEW: Status Effect Icons ---
+        const statusIcons = [];
+        // Check legacy
+        if(e.honeySlowed) statusIcons.push('🍯');
+        
+        // Check new ActiveEffects
+        if(e.activeEffects) {
+            if(e.activeEffects['poison']) {
+                const s = e.activeEffects['poison'].stacks || 1;
+                statusIcons.push(s > 1 ? `${s}☠️` : '☠️');
+            }
+            if(e.activeEffects['burn']) statusIcons.push('🔥');
+            if(e.activeEffects['SLOW']) statusIcons.push('❄️');
+            if(e.activeEffects['magma_burn']) statusIcons.push('🌋');
+        }
+
+        if(statusIcons.length > 0) {
+            ctx.font = '10px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+            const totalWidth = statusIcons.length * 12;
+            let startX = -totalWidth / 2 + 6;
+            statusIcons.forEach((icon, idx) => {
+                ctx.fillText(icon, startX + (idx * 12), -e.radius - 16);
+            });
+        }
+        // -------------------------------
+
         ctx.fillStyle = '#000'; ctx.fillRect(-10, -e.radius - 12, 20, 4);
         ctx.fillStyle = e.isBoss ? '#ef4444' : '#10b981'; ctx.fillRect(-10, -e.radius - 12, 20 * (e.health/e.maxHealth), 4);
         ctx.restore();
@@ -913,13 +1213,10 @@ function draw() {
         ctx.globalAlpha = lifeRatio; 
         
         if (p.type === 'lightning') {
-            // --- PROMINENT LIGHTNING DRAW LOGIC ---
-            
-            // 1. Outer Glow (Colored, Wide, Blurry)
             ctx.shadowBlur = 15; 
             ctx.shadowColor = p.color;
             ctx.strokeStyle = p.color; 
-            ctx.lineWidth = 6 * lifeRatio; // Thicker line
+            ctx.lineWidth = 6 * lifeRatio; 
             ctx.lineCap = 'round'; 
             ctx.lineJoin = 'round';
             
@@ -944,18 +1241,25 @@ function draw() {
             }
             ctx.stroke();
 
-            // 2. Inner Core (White, Sharp)
             ctx.shadowBlur = 0;
             ctx.strokeStyle = '#ffffff'; 
             ctx.lineWidth = 2 * lifeRatio;
             ctx.stroke();
-            // ----------------------------
         } else {
-            // Standard Particles
+            // --- UPDATED: Fire/Smoke particle handling ---
+            ctx.save();
+            // Allow custom alpha override (for fading)
+            ctx.globalAlpha = (p.alpha !== undefined ? p.alpha : 1.0) * lifeRatio;
+            if (p.isFire) ctx.globalCompositeOperation = 'lighter'; // GLOWING FIRE
             ctx.fillStyle = p.color;
             ctx.beginPath(); 
-            ctx.arc(p.x, p.y, 3, 0, Math.PI*2); 
+            // Scale radius over lifetime if it's fire
+            let r = p.radius || 3;
+            if(p.isFire) r *= (p.life / (p.maxLife || 20)); 
+            ctx.arc(p.x, p.y, r, 0, Math.PI*2); 
             ctx.fill();
+            ctx.restore();
+            // ---------------------------------------------
         }
         ctx.restore();
     });
@@ -974,16 +1278,47 @@ function draw() {
             ctx.fillStyle = v ? 'rgba(255,255,255,0.2)' : 'rgba(239,68,68,0.2)';
             ctx.strokeStyle = v ? '#fff' : '#ef4444'; ctx.lineWidth = 1;
             
-            ctx.arc(0, 0, rangePx, 0, Math.PI*2, false);
-            if(minRangePx > 0) ctx.arc(0, 0, minRangePx, 0, Math.PI*2, true);
-            
-            ctx.fill(); 
-            ctx.beginPath(); ctx.arc(0, 0, rangePx, 0, Math.PI*2); ctx.stroke();
-            if(minRangePx > 0) { ctx.beginPath(); ctx.arc(0, 0, minRangePx, 0, Math.PI*2); ctx.stroke(); }
+            if (t.fireMode === 'BURST_CARDINAL') {
+                const w = 40; // Width of the cross arm
+                // Draw cross
+                ctx.fillRect(-w/2, -rangePx, w, rangePx * 2); // Vertical
+                ctx.fillRect(-rangePx, -w/2, rangePx * 2, w); // Horizontal
+                ctx.strokeRect(-w/2, -rangePx, w, rangePx * 2);
+                ctx.strokeRect(-rangePx, -w/2, rangePx * 2, w);
+            } else {
+                ctx.arc(0, 0, rangePx, 0, Math.PI*2, false);
+                if(minRangePx > 0) ctx.arc(0, 0, minRangePx, 0, Math.PI*2, true);
+                ctx.fill(); 
+                ctx.beginPath(); ctx.arc(0, 0, rangePx, 0, Math.PI*2); ctx.stroke();
+                if(minRangePx > 0) { ctx.beginPath(); ctx.arc(0, 0, minRangePx, 0, Math.PI*2); ctx.stroke(); }
+            }
 
             ctx.globalAlpha = 0.7; ctx.fillStyle = t.color; ctx.fillRect(-20, -20, 40, 40);
             ctx.font = '32px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(t.icon, 0, 2);
             ctx.restore();
+        }
+
+        if((gameState.interactionMode === 'SPELL' || gameState.interactionMode === 'DRAG_SPELL') && gameState.selectedSpell) {
+            const s = SPELLS[gameState.selectedSpell];
+            if (s) {
+                const r = s.radius * CELL_SIZE;
+                ctx.save();
+                ctx.translate(mouse.x, mouse.y);
+                
+                ctx.beginPath();
+                ctx.arc(0, 0, r, 0, Math.PI*2);
+                
+                ctx.globalAlpha = 0.2;
+                ctx.fillStyle = s.color;
+                ctx.fill();
+                
+                ctx.globalAlpha = 0.8;
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = s.color;
+                ctx.stroke();
+                
+                ctx.restore();
+            }
         }
 
         if(gameState.interactionMode === 'UPGRADE' && gameState.selectedPlacedTower) {
@@ -993,11 +1328,19 @@ function draw() {
 
             ctx.save(); ctx.translate(t.x, t.y);
             ctx.beginPath(); ctx.fillStyle = 'rgba(255,255,255,0.1)'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
-            ctx.arc(0, 0, s.range * CELL_SIZE, 0, Math.PI*2, false);
-            if(minRangePx > 0) ctx.arc(0, 0, minRangePx, 0, Math.PI*2, true);
-            ctx.fill(); 
-            ctx.beginPath(); ctx.arc(0, 0, s.range * CELL_SIZE, 0, Math.PI*2); ctx.stroke();
-            if(minRangePx > 0) { ctx.beginPath(); ctx.arc(0, 0, minRangePx, 0, Math.PI*2); ctx.stroke(); }
+            if (t.type.fireMode === 'BURST_CARDINAL') {
+                const w = 40;
+                ctx.fillRect(-w/2, -s.range * 64, w, s.range * 128); // Vertical
+                ctx.fillRect(-s.range * 64, -w/2, s.range * 128, w); // Horizontal
+                ctx.strokeRect(-w/2, -s.range * 64, w, s.range * 128);
+                ctx.strokeRect(-s.range * 64, -w/2, s.range * 128, w);
+            } else {
+                ctx.arc(0, 0, s.range * CELL_SIZE, 0, Math.PI*2, false);
+                if(minRangePx > 0) ctx.arc(0, 0, minRangePx, 0, Math.PI*2, true);
+                ctx.fill(); 
+                ctx.beginPath(); ctx.arc(0, 0, s.range * CELL_SIZE, 0, Math.PI*2); ctx.stroke();
+                if(minRangePx > 0) { ctx.beginPath(); ctx.arc(0, 0, minRangePx, 0, Math.PI*2); ctx.stroke(); }
+            }
             ctx.restore();
         }
     }
@@ -1005,5 +1348,4 @@ function draw() {
     ctx.restore();
 }
 
-// Start Game
 init();

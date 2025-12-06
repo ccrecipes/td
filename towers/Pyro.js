@@ -3,10 +3,11 @@ window.GameTowers = window.GameTowers || {};
 window.GameTowers.PYRO = { 
     id: 'PYRO', name: 'Pyro', rarity: "RARE", cost: 6, range: 3.5, damage: 2, fireRate: 3, 
     icon: '🔥', color: '#ed8936', 
+    desc: "A close-range flamethrower unit that loves the smell of roasted pixels in the morning. Great for crowd control.",
     
     update: window.TowerEngine.updateTower,
     targetType: 'GROUND',
-    defaultStrategy: 'CLOSEST',
+    defaultStrategy: 'FIRST',
     
     // NEW CONE CONFIGURATION
     attackType: 'CONE',

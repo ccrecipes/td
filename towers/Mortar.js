@@ -3,6 +3,7 @@ window.GameTowers = window.GameTowers || {};
 window.GameTowers.MORTAR = { 
     id: 'MORTAR', name: 'Bomber', rarity: "RARE", cost: 6, range: 6.0, damage: 80, fireRate: 180, 
     icon: '💣', color: '#2d3748', 
+    desc: "Lobs heavy explosives in a high arc. Ideal for blasting groups of enemies, provided they don't move too fast.",
     
     update: window.TowerEngine.updateTower,
     targetType: 'GROUND',

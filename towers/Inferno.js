@@ -3,6 +3,7 @@ window.GameTowers = window.GameTowers || {};
 window.GameTowers.INFERNO = { 
     id: 'INFERNO', name: 'Inferno', rarity: "MYTHIC", cost: 10, range: 6.5, damage: 80, fireRate: 240, 
     icon: '🌋', color: '#c2410c', 
+    desc: "Unleashes the fury of a dormant volcano. Its magma projectiles create burning zones that melt even the toughest armor.",
     
     update: window.TowerEngine.updateTower,
     targetType: 'GROUND',
